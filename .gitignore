@@ -1,0 +1,8 @@
+bkpModels
+data/
+.cache/
+fig/
+pdfs/
+.RData
+.Rhistory
+.Rproj.user

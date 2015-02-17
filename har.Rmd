@@ -1,0 +1,124 @@
+---
+title: "Practical Machine Learning Project"
+author: "Erico Santos"
+date: "Saturday, January 17, 2015"
+output: html_document
+---
+
+## Human Activity Recognition (HAR)  
+
+This project aims to build a prediction model to guess how weel a lifting exercise was performed based on several variables collected by accelerometers (see details at <http://groupware.les.inf.puc-rio.br/har>).  
+
+```{r setup, cache = F, echo = F, message = F, warning = F, tidy = F, results='hide'}
+library(knitr)
+# make this an external chunk that can be included in any file
+options(width = 100)
+opts_chunk$set(message = F, error = F, warning = F, comment = NA, fig.align = 'center', dpi = 100, cache=TRUE,tidy = F, cache.path = '.cache/', fig.path = 'fig/')
+
+```
+
+## Data preparation and cleaning  
+
+There are 160 columns on the data set, so 159 possible predictors, some of them are factors with multiple levels which may yield yet more dummy variables. On a first cleaning step we will get rid of variables which have too many null values. A visual inspection on the data summary also shows several variables with the majority of occurences having a zero length character, which is equivalent to a null. We will also get rid of the variables related to subjects (name and number), with timestamps and window as those are assumed not relevant for the prediction objective.  
+After these variables are removed we're left with the "classe" variable (the prediction objective) plus the 52 predictors listed below.  
+
+```{r}
+library(caret)
+training <- read.csv("data/pml-training.csv")
+testing <- read.csv("data/pml-testing.csv")
+# str(training)
+# summary(training)
+propNULLS<-apply(training,2,function(cc) mean(is.na(cc)))
+propBlanks<-apply(training,2,function(cc) mean(cc==""))
+plot(propNULLS,pch=19,main="proportion of null/blank values in each variable")
+points(propBlanks,pch=19,col="red")
+legend(120,.6,c("nulls","blanks"),pch=19,col = c("black","red"))
+
+# oldtraining<-training
+training<-training[,!propNULLS>.8 & !propBlanks>.8]
+## removing name/time/window factors
+training<-training[,-c(1,2,3,4,5,6,7)]
+names(training)
+```
+
+## Model development and analysis  
+Having cleaned the dataset we proceed to testing some prediction models using the package caret. A first step is to create a cross validation set apart from the test data. As we have plenty of data we create a normal sampling with 70% of the data for training and 30% for testing/cross validation. We will base our model assessment on the out of sample error, that is, the error on the 30% cross validation data, so we avoid overfitting.  
+
+```{r}
+## Create cross validation
+trIndex = createDataPartition(training$classe, p = 0.70,list=FALSE)
+trainingCV = training[trIndex,]
+testingCV = training[-trIndex,]
+# summary(trainingCV)
+# table(training$classe)/sum(table(training$classe))
+# table(trainingCV$classe)/sum(table(trainingCV$classe))
+
+```
+
+### Classification tree  
+In the first test we fit a regressin tree with the method rpart. The model (see the tree below) performs poorly as can be seen on the confusion matrix. It fails to identify any subject of the D class and assigns most of the test cases to the A class. Overall accuracy is only 50% and the sensitivity is very low for each class.
+
+```{r}
+## load pre-processed models (manual caching)
+load("bkpModels") ## load m_rpart, m_rf, m_tb, ...
+# m_rpart = train(classe ~ .,data=trainingCV,method="rpart")
+# m_rpart$finalModel
+# plot(m_rpart$finalModel)
+# text(m_rpart$finalModel, use.n=TRUE, all=TRUE, cex=.8)
+library(rattle)
+library(rpart.plot)
+fancyRpartPlot(m_rpart$finalModel)
+confusionMatrix(testingCV$classe,predict(m_rpart,testingCV))
+```
+
+### Random forest  
+In the next test we run a random forest algorithm. This model takes more than 5 hours to train but yields a highly accurate result as can be seen in the confusion matrix below. Overall accuracy is more than 99% and sensitivity and specifity is above 99% for all classes.  
+
+```{r}
+confusionMatrix(testingCV$classe,predict(m_rf,testingCV))
+# system.time({m_rf <- train(classe ~ .,data=trainingCV,method="rf",prox=T)})
+## 5.2 hs
+# plot(m_rf)
+# m_rf$finalModel
+```
+
+Looking at the main variables considered by the random forest algorithm one can see that the first two variables are the same as in the first classification tree, but the random forest dentifies "yaw_belt" as the third most important variable while it is not even used in the tree. Other important variables are also left out of the first tree.  
+
+```{r}
+varImp(m_rf)
+```
+
+### Bagging  
+A bagging model was also trained and yielded approximately the same accuracy as the random forest model (see confusion matrix and statistics below) but in only 26 minutes. The order of importance of the variables is different, although all the main variables are considered by both methods.  
+
+```{r}
+# system.time({m_tb <- train(classe ~ .,data=trainingCV,method="treebag")})
+## 26 min.
+# m_tb$finalModel
+confusionMatrix(testingCV$classe,predict(m_tb,testingCV))
+varImp(m_tb)
+
+```
+
+### Principal component analysis  
+Even though we already have two good models (random forest and bagging) one could also explore the possibility of increasing efficiency for an eventual repeated application. This could be done with pre-processing of the data. The testing with principal component analysis reveals that only 20 variables (out of the 52 left after cleaning) are sufficient to explain 90% of the variance. This could also be used to develop faster methods.  
+
+```{r}
+prep <- preProcess(trainingCV[,-53],method = "pca",thresh = .9)
+prep
+# rot <- as.data.frame(round(prep$rotation,3))
+# save(m_rf,m_rpart,m_tb,file = "bkpModels")
+```
+
+### Predicting the test data  
+After training the models and finding high accuracy using the cross validation data we are confident to predict the test data using either the random forest or treebag models. The 20 test subjects are predicted to fall in the classes below. Both random forest and bagging models predict the same value for all test subjects.  
+
+```{r}
+## subset fields of interest
+fTesting <- testing[,names(training[,1:52])]
+library(knitr)
+kable(data.frame(problem_id=testing$problem_id
+                 ,prediction_rf=predict(m_rf,fTesting)
+                 ,prediction_tb=predict(m_tb,fTesting)),align="c")
+
+```
